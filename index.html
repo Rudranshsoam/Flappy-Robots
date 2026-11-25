@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#091329" />
+<title>Flappy Bot</title>
+<style>
+  :root { color-scheme: dark; --ink:#eaf5ff; --muted:#9db4d2; --cyan:#53e7ff; --violet:#947bff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; min-height:100%; }
+  body {
+    min-height:100vh; min-height:100dvh; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; padding:18px 24px 14px; color:var(--ink);
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+    background:radial-gradient(ellipse at 50% 0%, #1c3764 0%, #0c1932 45%, #070d1c 100%);
+    overflow-x:hidden;
+  }
+  header { width:min(100%, 1100px); display:flex; align-items:baseline; gap:16px; margin:0 0 12px; }
+  h1 { margin:0; font-size:clamp(25px, 3vw, 34px); line-height:1; letter-spacing:-.045em; }
+  h1 span { color:#65e6ff; text-shadow:0 0 22px #43dfff55; }
+  .game-wrap { width:min(100%, 1100px, calc((100dvh - 145px) * 1.77778)); position:relative; }
+  canvas {
+    display:block; width:100%; height:auto; aspect-ratio:16/9; border-radius:18px;
+    background:#10284a; border:1px solid #8cecff40;
+    box-shadow:0 24px 70px #0008, 0 0 0 5px #ffffff08, inset 0 0 30px #8beaff16;
+    touch-action:manipulation; outline:none;
+  }
+  .below { width:min(100%, 1100px); display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:11px; }
+  .hint { color:#a9bfd9; font-size:12px; line-height:1.45; }
+  .hint strong { color:#e8f9ff; }
+  button {
+    border:1px solid #85eaff70; border-radius:999px; padding:10px 16px; color:#071528; font-weight:850;
+    background:linear-gradient(135deg,#82f0ff,#82baff); box-shadow:0 7px 22px #50dfff30;
+    cursor:pointer; font-size:12px; letter-spacing:.04em; transition:transform .15s, filter .15s;
+  }
+  button:hover { filter:brightness(1.08); transform:translateY(-1px); }
+  button:active { transform:translateY(1px) scale(.98); }
+  button:focus-visible { outline:3px solid white; outline-offset:3px; }
+  @media (max-width:650px) {
+    body { padding:10px 10px 8px; }
+    header { margin-bottom:8px; gap:9px; flex-wrap:wrap; }
+    h1 { font-size:25px; }
+    .game-wrap { width:100%; }
+    canvas { border-radius:12px; }
+    .below { margin-top:8px; }
+  }
+  @media (max-height:520px) and (orientation:landscape) {
+    body { padding:5px 14px; justify-content:flex-start; }
+    header { margin:0 auto 5px; width:min(100%, 1000px); }
+    h1 { font-size:21px; }
+    .game-wrap { width:min(100%, calc((100dvh - 72px) * 1.77778)); }
+    .below { margin-top:5px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>FLAPPY <span>BOT</span></h1>
+</header>
+<main class="game-wrap">
+  <canvas id="game" width="960" height="540" tabindex="0" role="img" aria-label="Flappy Bot game. Tap, click, or press Space to fly through the gates."></canvas>
+</main>
+<div class="below">
+  <div class="hint"></div>
+</div>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = 960, H = 540, FLOOR = 500;
+  let state = 'ready';
+  let lastTime = 0;
+  let elapsed = 0;
+  let score = 0;
+  let best = 0;
+  let shake = 0;
+  let robot, gates, particles, stars, clouds;
+  let doubleTimer = 0, starTimer = 0;
+
+  try { best = Number(localStorage.getItem('flappyBotBest') || 0) || 0; } catch (_) { best = 0; }
+
+  function reset() {
+    score = 0; elapsed = 0; shake = 0; doubleTimer = 0; starTimer = 0;
+    robot = { x:220, y:250, vy:0, angle:0, blink:0, wing:0 };
+    gates = [];
+    particles = [];
+    for (let i=0;i<3;i++) gates.push(makeGate(820 + i*340));
+    state = 'ready';
+  }
+
+  function makeGate(x) {
+    const gap = Math.max(150, 178 - Math.min(score, 12)*1.4);
+    const center = 145 + Math.random()*210;
+    const top=center-gap/2, bottom=center+gap/2;
+    const powerup = Math.random() < 0.12 ? { type:Math.random()<0.55?'double':'star', y:top+35+Math.random()*Math.max(1,gap-70), collected:false } : null;
+    const moves = Math.random() < 0.10; // Only about 1 in 10 gates moves
+    const mystery = Math.random() < 0.01; // Rare golden gate: about 1 in 100
+    return { x, w:88, top, bottom, baseTop:top, baseBottom:bottom, moves, mystery, movePhase:Math.random()*Math.PI*2, moveSpeed:0.65+Math.random()*0.45, moveRange:28+Math.random()*20, basePowerY:powerup ? powerup.y : 0, passed:false, pulse:Math.random()*6.28, powerup };
+  }
+
+  function initScenery() {
+    stars = Array.from({length:48}, (_,i) => ({x:(i*83+19)%W, y:(i*137+31)%(FLOOR-30), r:.7+(i%4)*.45, phase:i*.9}));
+    clouds = Array.from({length:6}, (_,i) => ({x:i*205+10, y:55+(i*79)%330, s:.65+(i%3)*.2, speed:8+(i%3)*5}));
+  }
+
+  function burst(x,y,color,count=8) {
+    for(let i=0;i<count;i++) {
+      const a=Math.random()*Math.PI*2, speed=45+Math.random()*160;
+      particles.push({x,y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life:.35+Math.random()*.45,max:.8,size:2+Math.random()*4,color});
+    }
+  }
+
+
+  function flap() {
+    if (state === 'gameover') { reset(); state='playing'; robot.vy=-455; burst(robot.x,robot.y,'#6cecff',9); return; }
+    if (state === 'ready') state='playing';
+    if (state === 'playing') { robot.vy=-455; robot.wing=1; burst(robot.x-12,robot.y+8,'#75eaff',5); }
+  }
+
+  function endGame() {
+    if (state !== 'playing') return;
+    state='gameover'; shake=10; burst(robot.x,robot.y,'#ffbd79',20);
+    if(score>best) {
+      best=score;
+      try { localStorage.setItem('flappyBotBest', String(best)); } catch (_) {}
+    }
+  }
+
+  function update(dt) {
+    elapsed += dt;
+    doubleTimer = Math.max(0, doubleTimer-dt);
+    starTimer = Math.max(0, starTimer-dt);
+    if (state==='playing') {
+      robot.vy += 1370*dt;
+      robot.y += robot.vy*dt;
+      robot.angle = Math.max(-.48, Math.min(1.05, robot.vy/600));
+      robot.wing = Math.max(0,robot.wing-dt*3.2);
+
+      const speed = 255 + Math.min(score*4,100);
+      for (const g of gates) {
+        g.x -= speed*dt; g.pulse += dt*2.4;
+        if (g.moves) {
+          const offset = Math.sin(elapsed*g.moveSpeed + g.movePhase) * g.moveRange;
+          g.top = g.baseTop + offset;
+          g.bottom = g.baseBottom + offset;
+          if (g.powerup) g.powerup.y = g.basePowerY + offset;
+        }
+        if (!g.passed && g.x+g.w < robot.x-15) {
+          g.passed=true;
+          if (g.mystery) { score += 10; burst(robot.x+12,robot.y,'#ffe45c',24); }
+          else { score += doubleTimer>0 ? 2 : 1; burst(robot.x+12,robot.y,'#b7ff93',8); }
+        }
+        if (g.powerup && !g.powerup.collected) {
+          const px=g.x+g.w/2, py=g.powerup.y;
+          if (Math.hypot(robot.x-px,robot.y-py)<29) {
+            g.powerup.collected=true;
+            if (g.powerup.type==='double') { doubleTimer=20; burst(px,py,'#ffe36e',18); }
+            else { starTimer=10; burst(px,py,'#ff637c',22); }
+          }
+        }
+        if (starTimer<=0 && (circleRect(robot.x,robot.y,15,g.x,0,g.w,g.top) || circleRect(robot.x,robot.y,15,g.x,g.bottom,g.w,FLOOR-g.bottom))) endGame();
+      }
+      if(gates[0].x+gates[0].w < -10) {
+        gates.shift();
+        gates.push(makeGate(gates[gates.length-1].x+340));
+      }
+      if(robot.y-16<0 || robot.y+16>FLOOR) endGame();
+    } else if(state==='ready') {
+      robot.y=250+Math.sin(elapsed*2.7)*9;
+      robot.angle=Math.sin(elapsed*2.7)*.06;
+      robot.wing=.4+Math.sin(elapsed*5)*.18;
+    } else {
+      robot.vy += 1250*dt;
+      robot.y = Math.min(FLOOR-16, robot.y+robot.vy*dt);
+      robot.angle=Math.min(1.25,robot.angle+dt*2.3);
+    }
+    for(const p of particles) { p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=Math.pow(.18,dt); p.vy+=230*dt; p.life-=dt; }
+    particles=particles.filter(p=>p.life>0);
+    for(const c of clouds) { c.x-=c.speed*dt; if(c.x < -90)c.x=W+40; }
+    shake=Math.max(0,shake-32*dt);
+  }
+
+  function circleRect(cx,cy,r,rx,ry,rw,rh) {
+    const nx=Math.max(rx,Math.min(cx,rx+rw)), ny=Math.max(ry,Math.min(cy,ry+rh));
+    const dx=cx-nx,dy=cy-ny; return dx*dx+dy*dy<r*r;
+  }
+
+  function roundedRect(x,y,w,h,r) {
+    ctx.beginPath(); ctx.roundRect(x,y,w,h,r);
+  }
+
+  function drawBackground() {
+    const sky=ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,'#102a50'); sky.addColorStop(.57,'#193c63'); sky.addColorStop(1,'#254b66');
+    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+    // Soft glowing moon
+    const moon=ctx.createRadialGradient(760,105,4,760,105,78);
+    moon.addColorStop(0,'#c4f5ff35'); moon.addColorStop(1,'#a7efff00');
+    ctx.fillStyle=moon; ctx.fillRect(670,20,180,170);
+    ctx.fillStyle='#d3f7ff'; ctx.globalAlpha=.9; ctx.beginPath();ctx.arc(760,105,22,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+    for(const s of stars) {
+      ctx.globalAlpha=.22+.45*(.5+.5*Math.sin(elapsed*1.7+s.phase));
+      ctx.fillStyle='#d6f7ff';ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // distant hills
+    ctx.fillStyle='#173b58';ctx.beginPath();ctx.moveTo(0,390);ctx.quadraticCurveTo(170,300,330,390);ctx.quadraticCurveTo(560,275,730,385);ctx.quadraticCurveTo(850,320,960,375);ctx.lineTo(960,FLOOR);ctx.lineTo(0,FLOOR);ctx.fill();
+    ctx.fillStyle='#1b4963';ctx.beginPath();ctx.moveTo(0,445);ctx.quadraticCurveTo(220,350,440,445);ctx.quadraticCurveTo(700,365,960,435);ctx.lineTo(960,FLOOR);ctx.lineTo(0,FLOOR);ctx.fill();
+    for(const c of clouds) drawCloud(c.x,c.y,c.s);
+  }
+
+  function drawCloud(x,y,s) {
+    ctx.save();ctx.translate(x,y);ctx.scale(s,s);ctx.globalAlpha=.14;ctx.fillStyle='#d9f8ff';
+    ctx.beginPath();ctx.arc(0,8,17,0,Math.PI*2);ctx.arc(19,0,22,0,Math.PI*2);ctx.arc(42,9,15,0,Math.PI*2);ctx.rect(0,8,42,16);ctx.fill();ctx.restore();
+  }
+
+  function drawGate(g) {
+    const glow=ctx.createLinearGradient(g.x,0,g.x+g.w,0);
+    if (g.mystery) { glow.addColorStop(0,'#b77a08');glow.addColorStop(.5,'#ffe66a');glow.addColorStop(1,'#c58a12'); }
+    else { glow.addColorStop(0,'#2b9eaa');glow.addColorStop(.5,'#65e8d2');glow.addColorStop(1,'#267b9b'); }
+    ctx.save();
+    ctx.shadowColor=g.mystery?'#ffd52e':'#49f3df';ctx.shadowBlur=g.mystery?25:13;
+    ctx.fillStyle=glow;
+    roundedRect(g.x-2,-18,g.w+4,g.top+18,12);ctx.fill();
+    roundedRect(g.x-2,g.bottom,g.w+4,FLOOR-g.bottom+16,12);ctx.fill();
+    ctx.shadowBlur=0;
+    // gate end caps
+    const capH=18;
+    ctx.fillStyle=g.mystery?'#fff0a1':'#a8fff0';
+    roundedRect(g.x-7,g.top-capH,g.w+14,capH,7);ctx.fill();
+    roundedRect(g.x-7,g.bottom,g.w+14,capH,7);ctx.fill();
+    if (g.mystery) {
+      ctx.shadowColor='#fff06a';ctx.shadowBlur=14;ctx.fillStyle='#49330a';
+      ctx.font='900 30px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('?',g.x+g.w/2,(g.top+g.bottom)/2);ctx.shadowBlur=0;
+    }
+    // inner highlights
+    ctx.globalAlpha=.25;ctx.fillStyle='#edfffd';
+    roundedRect(g.x+9,0,5,Math.max(0,g.top-capH),3);ctx.fill();
+    roundedRect(g.x+9,g.bottom+capH,5,Math.max(0,FLOOR-g.bottom-capH),3);ctx.fill();
+    ctx.globalAlpha=1;
+    // little tech markings
+    ctx.fillStyle='#145b70';
+    for(let yy=36;yy<g.top-30;yy+=42){ctx.fillRect(g.x+52,yy,10,3);}
+    for(let yy=g.bottom+38;yy<FLOOR-20;yy+=42){ctx.fillRect(g.x+52,yy,10,3);}
+    ctx.restore();
+  }
+
+  function drawRobot() {
+    ctx.save();ctx.translate(robot.x,robot.y);ctx.rotate(robot.angle);
+    // jet glow
+    const jet=ctx.createRadialGradient(-20,9,1,-20,9,26);jet.addColorStop(0,'#9cfcffbb');jet.addColorStop(1,'#53dfff00');ctx.fillStyle=jet;ctx.beginPath();ctx.arc(-20,9,26,0,Math.PI*2);ctx.fill();
+    // antenna
+    ctx.strokeStyle='#b8f6ff';ctx.lineWidth=3;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(1,-19);ctx.lineTo(5,-27);ctx.stroke();
+    ctx.fillStyle='#ffdc78';ctx.shadowColor='#ffcf73';ctx.shadowBlur=9;ctx.beginPath();ctx.arc(6,-29,4,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+    // wing / side thruster
+    ctx.save();ctx.rotate(-.2-robot.wing*.5);ctx.fillStyle='#3289b8';ctx.strokeStyle='#b6f7ff';ctx.lineWidth=2;
+    roundedRect(-19,-1,15,20,7);ctx.fill();ctx.stroke();ctx.restore();
+    // body
+    const body=ctx.createLinearGradient(-18,-20,18,20);
+    if(starTimer>0){body.addColorStop(0,'#fff0f2');body.addColorStop(.48,'#ff657b');body.addColorStop(1,'#b81743');}
+    else {body.addColorStop(0,'#f5ffff');body.addColorStop(.48,'#a9e9f4');body.addColorStop(1,'#5aa7d0');}
+    ctx.shadowColor=starTimer>0?'#ff315f':'#57eaff';ctx.shadowBlur=17;ctx.fillStyle=body;ctx.strokeStyle=starTimer>0?'#ffd4dc':'#e8ffff';ctx.lineWidth=2.3;
+    roundedRect(-18,-19,38,39,12);ctx.fill();ctx.stroke();ctx.shadowBlur=0;
+    // face screen
+    ctx.fillStyle=starTimer>0?'#68172f':'#173d61';roundedRect(-11,-11,25,17,7);ctx.fill();
+    ctx.fillStyle='#8dffff';ctx.shadowColor='#66ffff';ctx.shadowBlur=7;
+    ctx.beginPath();ctx.arc(-4,-3,2.5,0,Math.PI*2);ctx.arc(7,-3,2.5,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+    // tiny smile
+    ctx.strokeStyle='#75c7dd';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(2,1,4,.2,Math.PI-.2);ctx.stroke();
+    // lower panel
+    ctx.fillStyle='#438bb1';roundedRect(-8,12,17,4,2);ctx.fill();
+    ctx.fillStyle='#bbffff';ctx.beginPath();ctx.arc(-3,14,1,0,Math.PI*2);ctx.arc(4,14,1,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPowerup(g) {
+    if(!g.powerup || g.powerup.collected) return;
+    const x=g.x+g.w/2, y=g.powerup.y, isDouble=g.powerup.type==='double';
+    ctx.save(); ctx.translate(x,y); ctx.shadowBlur=18; ctx.shadowColor=isDouble?'#ffd84d':'#ff5577';
+    ctx.fillStyle=isDouble?'#ffdc55':'#ff5477'; ctx.beginPath(); ctx.arc(0,0,17,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0; ctx.fillStyle='#18243b'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    if(isDouble){ctx.font='900 13px system-ui';ctx.fillText('2X',0,1);}
+    else {ctx.font='900 23px system-ui';ctx.fillText('★',0,1);}
+    ctx.restore();
+  }
+
+  function drawFloor() {
+    const g=ctx.createLinearGradient(0,FLOOR,0,H);g.addColorStop(0,'#173b58');g.addColorStop(1,'#0b1c35');ctx.fillStyle=g;ctx.fillRect(0,FLOOR,W,H-FLOOR);
+    ctx.fillStyle='#69f1dc';ctx.shadowColor='#54f3e2';ctx.shadowBlur=13;ctx.fillRect(0,FLOOR,W,4);ctx.shadowBlur=0;
+    ctx.globalAlpha=.22;ctx.strokeStyle='#8cefe6';ctx.lineWidth=1;
+    for(let x=-30;x<W+30;x+=64){ctx.beginPath();ctx.moveTo(x,FLOOR+4);ctx.lineTo(x-18,H);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+
+  function drawParticles() {
+    for(const p of particles){ctx.globalAlpha=Math.max(0,p.life/p.max);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,p.size*Math.max(.2,p.life/p.max),0,Math.PI*2);ctx.fill();}
+    ctx.globalAlpha=1;
+  }
+
+  function drawPill(text,x,y,w) {
+    ctx.fillStyle='#06182bc9';roundedRect(x,y,w,37,18);ctx.fill();ctx.strokeStyle='#a3f2ff40';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='#9eb9d1';ctx.font='800 10px system-ui';ctx.textAlign='left';ctx.fillText(text.toUpperCase(),x+12,y+14);
+    ctx.fillStyle='#f1fcff';ctx.font='800 15px system-ui';ctx.textAlign='right';ctx.fillText(String(score),x+w-12,y+28);
+  }
+
+  function drawOverlay() {
+    if(state==='ready') {
+      ctx.fillStyle='#06142a55';ctx.fillRect(0,0,W,H);
+      ctx.textAlign='center';ctx.shadowColor='#5feaff';ctx.shadowBlur=20;
+      ctx.fillStyle='#eaffff';ctx.font='900 38px system-ui';ctx.fillText('READY, ROBOT?',W/2,205);ctx.shadowBlur=0;
+      ctx.fillStyle='#b9d8ed';ctx.font='600 15px system-ui';ctx.fillText('Dodge the gates and keep flying!',W/2,238);
+      ctx.fillStyle='#65eaff';roundedRect(374,285,212,57,28);ctx.fill();
+      ctx.fillStyle='#09213a';ctx.font='900 16px system-ui';ctx.fillText('CLICK TO START',W/2,321);
+      ctx.fillStyle='#d4e9f8';ctx.font='600 12px system-ui';ctx.fillText('or press SPACE / ↑',W/2,365);
+    } else if(state==='gameover') {
+      ctx.fillStyle='#0413269c';ctx.fillRect(0,0,W,H);
+      ctx.textAlign='center';ctx.fillStyle='#ffdcaa';ctx.font='900 36px system-ui';ctx.fillText('FLIGHT OVER',W/2,175);
+      ctx.fillStyle='#c3d9eb';ctx.font='600 14px system-ui';ctx.fillText('Nice flying. Give it another go!',W/2,205);
+      ctx.fillStyle='#0b263e';roundedRect(361,230,238,94,18);ctx.fill();ctx.strokeStyle='#8ceaff70';ctx.stroke();
+      ctx.fillStyle='#9bb8d2';ctx.font='800 10px system-ui';ctx.fillText('YOUR SCORE',W/2,258);
+      ctx.fillStyle='#f2fdff';ctx.font='900 34px system-ui';ctx.fillText(String(score),W/2,296);
+      ctx.fillStyle='#b3cee5';ctx.font='700 13px system-ui';ctx.fillText('BEST  '+best,W/2,350);
+      ctx.fillStyle='#69edff';roundedRect(377,380,206,56,28);ctx.fill();
+      ctx.fillStyle='#082039';ctx.font='900 15px system-ui';ctx.fillText('PLAY AGAIN',W/2,415);
+      ctx.fillStyle='#b5cee2';ctx.font='600 12px system-ui';ctx.fillText('click or press SPACE',W/2,460);
+    }
+  }
+
+  function render() {
+    ctx.save();
+    if(shake>0) ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+    drawBackground();
+    for(const g of gates) drawGate(g);
+    for(const g of gates) drawPowerup(g);
+    drawFloor();
+    drawRobot();
+    drawParticles();
+    drawPill('SCORE',15,17,92);
+    ctx.fillStyle='#9bb8d2';ctx.font='800 10px system-ui';ctx.textAlign='right';ctx.fillText('BEST  '+best,W-17,30);
+    let hudX=390;
+    if(doubleTimer>0){ctx.fillStyle='#ffdc55';roundedRect(hudX,17,86,34,16);ctx.fill();ctx.fillStyle='#20243a';ctx.font='900 12px system-ui';ctx.textAlign='center';ctx.fillText('2X  '+Math.ceil(doubleTimer)+'s',hudX+43,39);hudX+=96;}
+    if(starTimer>0){ctx.fillStyle='#ff5477';roundedRect(hudX,17,112,34,16);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 12px system-ui';ctx.textAlign='center';ctx.fillText('★  '+Math.ceil(starTimer)+'s',hudX+56,39);}
+    drawOverlay();
+    ctx.restore();
+  }
+
+  function frame(t) {
+    const dt=Math.min(.033,(t-lastTime)/1000||0);lastTime=t;
+    update(dt);render();requestAnimationFrame(frame);
+  }
+
+  function pointerAction(e) {
+    if(e) e.preventDefault();
+    const rect=canvas.getBoundingClientRect();
+    const y=(e && e.clientY!==undefined)?(e.clientY-rect.top)*H/rect.height:0;
+    const x=(e && e.clientX!==undefined)?(e.clientX-rect.left)*W/rect.width:0;
+    if(state==='gameover' && x>350 && x<610 && y>365 && y<445) { reset();state='playing';robot.vy=-455;return; }
+    flap();
+  }
+
+  canvas.addEventListener('pointerdown', pointerAction, {passive:false});
+  window.addEventListener('keydown', e => {
+    if(e.code==='Space' || e.code==='ArrowUp' || e.code==='KeyW') { e.preventDefault(); if(!e.repeat) flap(); }
+    if(e.code==='Enter' && state!=='playing') { e.preventDefault(); flap(); }
+  });
+
+  initScenery();reset();requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
